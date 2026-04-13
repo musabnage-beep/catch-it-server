@@ -171,7 +171,9 @@ function parsePlateFromExcelCell(value) {
     }
   }
   if (numbers.length >= 1 && numbers.length <= 4 && letters.length >= 1 && letters.length <= 3 && areValidPlateLetters(letters)) {
-    return { numbers, letters, plateNumber: `${numbers} ${letters}` };
+    // REVERSE letters: Arabic RTL reading order → English LTR plate order
+    const reversedLetters = letters.split('').reverse().join('');
+    return { numbers, letters: reversedLetters, plateNumber: `${numbers} ${reversedLetters}` };
   }
 
   const upper = cleaned.toUpperCase();
