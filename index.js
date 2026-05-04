@@ -63,6 +63,7 @@ const plateSchema = new mongoose.Schema({
   letters_english: { type: String, required: true },
   numbers: { type: String, required: true },
   notes: String,
+  organization: String,
   created_at: { type: String, default: () => new Date().toISOString() }
 });
 plateSchema.pre('save', async function(next) {
@@ -296,7 +297,7 @@ app.get('/api/plates/normalized', async (req, res) => {
 
 app.post('/api/plates', async (req, res) => {
   try {
-    const { plateNumber, lettersArabic, lettersEnglish, numbers, notes } = req.body;
+    const { plateNumber, lettersArabic, lettersEnglish, numbers, notes, organization } = req.body;
     const existing = await Plate.findOne({ plate_number: plateNumber });
     if (existing) return res.status(409).json({ error: 'Plate already exists' });
 
@@ -305,7 +306,8 @@ app.post('/api/plates', async (req, res) => {
       letters_arabic: lettersArabic || null,
       letters_english: lettersEnglish,
       numbers,
-      notes: notes || null
+      notes: notes || null,
+      organization: organization || null
     });
     await plate.save();
     res.json({ id: plate.id });
@@ -327,7 +329,8 @@ app.post('/api/plates/bulk', async (req, res) => {
           letters_arabic: p.lettersArabic || null,
           letters_english: p.lettersEnglish,
           numbers: p.numbers,
-          notes: p.notes || null
+          notes: p.notes || null,
+          organization: p.organization || null
         });
         await plate.save();
         count++;
@@ -338,6 +341,19 @@ app.post('/api/plates/bulk', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+// Detect which column index in the header row contains "organization" / "مؤسسة"
+function findOrganizationColumn(headerRow) {
+  if (!headerRow) return -1;
+  const keywords = ['مؤسسة', 'المؤسسة', 'organization', 'company', 'الشركة', 'شركة', 'الجهة', 'جهة'];
+  for (let i = 0; i < headerRow.length; i++) {
+    const v = headerRow[i];
+    if (!v) continue;
+    const txt = v.toString().trim().toLowerCase();
+    if (keywords.some(k => txt.includes(k.toLowerCase()))) return i;
+  }
+  return -1;
+}
 
 app.post('/api/plates/import-excel', upload.single('file'), async (req, res) => {
   try {
@@ -351,11 +367,19 @@ app.post('/api/plates/import-excel', upload.single('file'), async (req, res) => 
       const sheet = workbook.Sheets[sheetName];
       const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
 
-      for (const row of rows) {
+      // Detect organization column from header row (first row), if present
+      const orgColIndex = rows.length > 0 ? findOrganizationColumn(rows[0]) : -1;
+
+      for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+        const row = rows[rowIdx];
         if (!row || row.length === 0) continue;
+        // Skip the header row itself (we won't try to parse a plate from it)
+        if (rowIdx === 0 && orgColIndex !== -1) continue;
 
         let found = null;
-        for (const cell of row) {
+        for (let cIdx = 0; cIdx < row.length; cIdx++) {
+          if (cIdx === orgColIndex) continue; // skip org column
+          const cell = row[cIdx];
           if (!cell) continue;
           found = parsePlateFromExcelCell(cell.toString());
           if (found) break;
@@ -363,7 +387,9 @@ app.post('/api/plates/import-excel', upload.single('file'), async (req, res) => 
 
         if (!found && row.length >= 2) {
           let numbers = null, letters = null;
-          for (const cell of row) {
+          for (let cIdx = 0; cIdx < row.length; cIdx++) {
+            if (cIdx === orgColIndex) continue; // skip org column
+            const cell = row[cIdx];
             if (!cell) continue;
             const val = convertArabicDigits(cell.toString().trim());
             if (!numbers && /^\d{1,4}$/.test(val)) { numbers = val; continue; }
@@ -388,10 +414,17 @@ app.post('/api/plates/import-excel', upload.single('file'), async (req, res) => 
           const norm = normalizePlate(found.plateNumber);
           if (!seen.has(norm)) {
             seen.add(norm);
+            // Extract organization value from designated column for this row
+            let organization = null;
+            if (orgColIndex !== -1 && row[orgColIndex]) {
+              const v = row[orgColIndex].toString().trim();
+              if (v) organization = v;
+            }
             plates.push({
               ...found,
               lettersArabic: getArabicLetters(found.letters),
               lettersEnglish: found.letters,
+              organization,
             });
           }
         }
@@ -414,7 +447,8 @@ app.post('/api/plates/import-excel', upload.single('file'), async (req, res) => 
           letters_arabic: p.lettersArabic,
           letters_english: p.lettersEnglish,
           numbers: p.numbers,
-          notes: null
+          notes: null,
+          organization: p.organization || null
         });
         await plate.save();
         count++;
