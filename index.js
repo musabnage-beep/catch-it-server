@@ -266,6 +266,21 @@ app.post('/api/users', async (req, res) => {
   }
 });
 
+app.delete('/api/users/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const user = await User.findOne({ id });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (user.username === 'admin') {
+      return res.status(403).json({ error: 'Cannot delete the default admin user' });
+    }
+    await User.deleteOne({ id });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ============ PLATES Routes ============
 app.get('/api/plates', async (req, res) => {
   try {
