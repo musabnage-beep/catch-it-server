@@ -334,24 +334,73 @@ app.post('/api/plates', async (req, res) => {
 app.post('/api/plates/bulk', async (req, res) => {
   try {
     const { plates } = req.body;
-    let count = 0;
-    for (const p of plates) {
-      try {
-        const existing = await Plate.findOne({ plate_number: p.plateNumber });
-        if (existing) continue;
-        const plate = new Plate({
-          plate_number: p.plateNumber,
-          letters_arabic: p.lettersArabic || null,
-          letters_english: p.lettersEnglish,
-          numbers: p.numbers,
-          notes: p.notes || null,
-          organization: p.organization || null
-        });
-        await plate.save();
-        count++;
-      } catch (_) { /* skip duplicates */ }
+    if (!Array.isArray(plates) || plates.length === 0) {
+      return res.json({ imported: 0, total: 0, duplicates: 0 });
     }
-    res.json({ imported: count, total: plates.length, duplicates: plates.length - count });
+
+    // 1) Deduplicate within the incoming batch by plate_number (keep first)
+    const seen = new Set();
+    const unique = [];
+    for (const p of plates) {
+      if (!p || !p.plateNumber) continue;
+      if (seen.has(p.plateNumber)) continue;
+      seen.add(p.plateNumber);
+      unique.push(p);
+    }
+
+    // 2) One query to find existing plate_numbers
+    const numbers = unique.map(p => p.plateNumber);
+    const existing = await Plate.find(
+      { plate_number: { $in: numbers } },
+      'plate_number'
+    ).lean();
+    const existingSet = new Set(existing.map(e => e.plate_number));
+
+    // 3) Build docs only for new plates
+    const newPlates = unique.filter(p => !existingSet.has(p.plateNumber));
+
+    let imported = 0;
+    if (newPlates.length > 0) {
+      // 4) Allocate IDs in one atomic counter update
+      const counter = await Counter.findByIdAndUpdate(
+        'plates',
+        { $inc: { seq: newPlates.length } },
+        { new: true, upsert: true }
+      );
+      const startId = counter.seq - newPlates.length + 1;
+      const nowIso = new Date().toISOString();
+      const docs = newPlates.map((p, i) => ({
+        id: startId + i,
+        plate_number: p.plateNumber,
+        letters_arabic: p.lettersArabic || null,
+        letters_english: p.lettersEnglish,
+        numbers: p.numbers,
+        notes: p.notes || null,
+        organization: p.organization || null,
+        created_at: nowIso
+      }));
+
+      // 5) Insert all in one DB call; ordered:false skips duplicate-key errors
+      try {
+        const inserted = await Plate.insertMany(docs, { ordered: false });
+        imported = inserted.length;
+      } catch (err) {
+        // Some duplicates raced in — count successful insertions from the error
+        if (err && err.insertedDocs) {
+          imported = err.insertedDocs.length;
+        } else if (err && err.result && typeof err.result.nInserted === 'number') {
+          imported = err.result.nInserted;
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    res.json({
+      imported,
+      total: plates.length,
+      duplicates: plates.length - imported
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
