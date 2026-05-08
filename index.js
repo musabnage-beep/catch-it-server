@@ -360,7 +360,7 @@ app.post('/api/plates/bulk', async (req, res) => {
 // Detect which column index in the header row contains "organization" / "مؤسسة"
 function findOrganizationColumn(headerRow) {
   if (!headerRow) return -1;
-  const keywords = ['مؤسسة', 'المؤسسة', 'organization', 'company', 'الشركة', 'شركة', 'الجهة', 'جهة'];
+  const keywords = ['مؤسسة', 'المؤسسة', 'organization', 'company', 'الشركة', 'شركة', 'الجهة', 'جهة', 'البنك', 'بنك'];
   for (let i = 0; i < headerRow.length; i++) {
     const v = headerRow[i];
     if (!v) continue;
