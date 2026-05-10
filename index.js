@@ -266,6 +266,40 @@ app.post('/api/users', async (req, res) => {
   }
 });
 
+app.patch('/api/users/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const user = await User.findOne({ id });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const { username, password, role, fullName } = req.body;
+    const update = {};
+    if (typeof username === 'string' && username.trim() !== '') {
+      if (user.username === 'admin' && username.trim() !== 'admin') {
+        return res.status(403).json({ error: 'Cannot rename the default admin user' });
+      }
+      update.username = username.trim();
+    }
+    if (typeof password === 'string' && password.length > 0) {
+      update.password = password;
+    }
+    if (typeof role === 'string' && (role === 'admin' || role === 'employee')) {
+      if (user.username === 'admin' && role !== 'admin') {
+        return res.status(403).json({ error: 'Cannot demote the default admin user' });
+      }
+      update.role = role;
+    }
+    if (typeof fullName === 'string') update.full_name = fullName.trim();
+    if (Object.keys(update).length === 0) return res.json({ success: true });
+    await User.updateOne({ id }, { $set: update });
+    res.json({ success: true });
+  } catch (e) {
+    if (e && e.code === 11000) {
+      return res.status(409).json({ error: 'Username already exists' });
+    }
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.delete('/api/users/:id', async (req, res) => {
   try {
     const id = parseInt(req.params.id);
