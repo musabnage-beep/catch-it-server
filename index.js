@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const compression = require('compression');
 const mongoose = require('mongoose');
 const multer = require('multer');
 const XLSX = require('xlsx');
@@ -11,6 +12,7 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors());
+app.use(compression());
 app.use(express.json({ limit: '50mb' }));
 
 // Multer for file uploads
@@ -318,8 +320,16 @@ app.delete('/api/users/:id', async (req, res) => {
 // ============ PLATES Routes ============
 app.get('/api/plates', async (req, res) => {
   try {
-    const plates = await Plate.find({}).sort({ created_at: -1 });
-    res.json(toPlainArray(plates));
+    // Use .lean() to skip Mongoose document overhead (3-5x less memory, ~5x faster).
+    // Explicit projection avoids returning __v and keeps payload small.
+    const plates = await Plate.find(
+      {},
+      'id plate_number letters_arabic letters_english numbers notes organization created_at'
+    )
+      .sort({ created_at: -1 })
+      .lean();
+    for (const p of plates) { delete p._id; }
+    res.json(plates);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -336,7 +346,7 @@ app.get('/api/plates/count', async (req, res) => {
 
 app.get('/api/plates/normalized', async (req, res) => {
   try {
-    const plates = await Plate.find({}, 'plate_number');
+    const plates = await Plate.find({}, 'plate_number').lean();
     const normalized = plates.map(p => normalizePlate(p.plate_number));
     res.json(normalized);
   } catch (e) {
@@ -718,11 +728,17 @@ app.get('/api/stats', async (req, res) => {
 // ============ SYNC Route ============
 app.get('/api/sync', async (req, res) => {
   try {
-    const plates = await Plate.find({});
-    const plainPlates = toPlainArray(plates);
-    const normalizedSet = plainPlates.map(p => normalizePlate(p.plate_number));
+    const plates = await Plate.find(
+      {},
+      'id plate_number letters_arabic letters_english numbers notes organization created_at'
+    ).lean();
+    const normalizedSet = new Array(plates.length);
+    for (let i = 0; i < plates.length; i++) {
+      normalizedSet[i] = normalizePlate(plates[i].plate_number);
+      delete plates[i]._id;
+    }
     res.json({
-      plates: plainPlates,
+      plates,
       normalizedPlateNumbers: normalizedSet,
       timestamp: new Date().toISOString(),
     });
