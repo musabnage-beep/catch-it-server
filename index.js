@@ -318,18 +318,51 @@ app.delete('/api/users/:id', async (req, res) => {
 });
 
 // ============ PLATES Routes ============
+// Paginated plates endpoint. Returns at most `limit` plates per request.
+// If `paginated=true` is supplied, returns { plates, total, page, limit, hasMore }.
+// Otherwise (no pagination requested) returns a plain array (backward compatible).
+// Supports optional `search` (matches plate_number / letters_english / numbers / notes / organization).
 app.get('/api/plates', async (req, res) => {
   try {
-    // Use .lean() to skip Mongoose document overhead (3-5x less memory, ~5x faster).
-    // Explicit projection avoids returning __v and keeps payload small.
-    const plates = await Plate.find(
-      {},
-      'id plate_number letters_arabic letters_english numbers notes organization created_at'
-    )
-      .sort({ created_at: -1 })
-      .lean();
+    const paginated = req.query.paginated === 'true' || req.query.page !== undefined;
+    const page = Math.max(1, parseInt(req.query.page || '1', 10) || 1);
+    const limit = Math.max(1, Math.min(500, parseInt(req.query.limit || '100', 10) || 100));
+    const search = (req.query.search || '').toString().trim();
+    const projection = 'id plate_number letters_arabic letters_english numbers notes organization created_at';
+
+    const filter = {};
+    if (search) {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const rx = new RegExp(escaped, 'i');
+      filter.$or = [
+        { plate_number: rx },
+        { letters_english: rx },
+        { numbers: rx },
+        { notes: rx },
+        { organization: rx },
+      ];
+    }
+
+    if (!paginated && !search) {
+      // Backward-compat: no pagination params -> stream full list with .lean()
+      const plates = await Plate.find({}, projection).sort({ created_at: -1 }).lean();
+      for (const p of plates) { delete p._id; }
+      return res.json(plates);
+    }
+
+    const skip = (page - 1) * limit;
+    const [plates, total] = await Promise.all([
+      Plate.find(filter, projection).sort({ created_at: -1 }).skip(skip).limit(limit).lean(),
+      Plate.countDocuments(filter),
+    ]);
     for (const p of plates) { delete p._id; }
-    res.json(plates);
+    res.json({
+      plates,
+      total,
+      page,
+      limit,
+      hasMore: skip + plates.length < total,
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -588,12 +621,44 @@ app.delete('/api/plates', async (req, res) => {
   }
 });
 
+// Fast check: parse the normalized form into numbers/letters and look up directly
+// using the indexed unique plate_number/letters_english/numbers combination —
+// avoids scanning the entire collection.
 app.get('/api/plates/check/:plateNumber', async (req, res) => {
   try {
     const normalized = normalizePlate(req.params.plateNumber);
-    const plates = await Plate.find({}, 'plate_number');
-    const exists = plates.some(p => normalizePlate(p.plate_number) === normalized);
-    res.json({ exists });
+    if (!normalized) return res.json({ exists: false });
+    const numbers = (normalized.match(/\d+/) || [''])[0];
+    const letters = (normalized.match(/[A-Z]+/i) || [''])[0].toUpperCase();
+    const plate = await Plate.findOne(
+      { numbers, letters_english: letters },
+      'id plate_number letters_arabic letters_english numbers notes organization'
+    ).lean();
+    if (!plate) return res.json({ exists: false });
+    delete plate._id;
+    res.json({ exists: true, plate });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Lookup full plate details by the normalized representation. Used by the
+// employee scanner: after the in-memory normalized set reports a match, the
+// app fetches the matching plate's full info on demand instead of holding
+// all 50K plate objects in client RAM.
+app.get('/api/plates/by-normalized/:normalized', async (req, res) => {
+  try {
+    const normalized = normalizePlate(req.params.normalized);
+    if (!normalized) return res.status(404).json({ error: 'not found' });
+    const numbers = (normalized.match(/\d+/) || [''])[0];
+    const letters = (normalized.match(/[A-Z]+/i) || [''])[0].toUpperCase();
+    const plate = await Plate.findOne(
+      { numbers, letters_english: letters },
+      'id plate_number letters_arabic letters_english numbers notes organization created_at'
+    ).lean();
+    if (!plate) return res.status(404).json({ error: 'not found' });
+    delete plate._id;
+    res.json(plate);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -726,20 +791,21 @@ app.get('/api/stats', async (req, res) => {
 });
 
 // ============ SYNC Route ============
+// Slim sync endpoint: returns ONLY normalized plate numbers + count + timestamp.
+// The employee scanner only needs the normalized set for instant matching.
+// Full plate details (notes, organization) are fetched on demand via
+// /api/plates/check/:plateNumber when a match is found. This avoids holding
+// all 50K full plate objects in memory on every sync (prevents OOM crash).
 app.get('/api/sync', async (req, res) => {
   try {
-    const plates = await Plate.find(
-      {},
-      'id plate_number letters_arabic letters_english numbers notes organization created_at'
-    ).lean();
+    const plates = await Plate.find({}, 'plate_number').lean();
     const normalizedSet = new Array(plates.length);
     for (let i = 0; i < plates.length; i++) {
       normalizedSet[i] = normalizePlate(plates[i].plate_number);
-      delete plates[i]._id;
     }
     res.json({
-      plates,
       normalizedPlateNumbers: normalizedSet,
+      total: plates.length,
       timestamp: new Date().toISOString(),
     });
   } catch (e) {
