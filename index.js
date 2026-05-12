@@ -725,6 +725,41 @@ app.get('/api/sessions/:id', async (req, res) => {
   }
 });
 
+// Delete a single session and all its scan_results
+app.delete('/api/sessions/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const [sessionRes, resultsRes] = await Promise.all([
+      ScanSession.deleteOne({ id }),
+      ScanResult.deleteMany({ session_id: id }),
+    ]);
+    res.json({
+      success: true,
+      sessionDeleted: sessionRes.deletedCount || 0,
+      resultsDeleted: resultsRes.deletedCount || 0,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Delete ALL sessions and ALL scan_results
+app.delete('/api/sessions', async (req, res) => {
+  try {
+    const [sessionsRes, resultsRes] = await Promise.all([
+      ScanSession.deleteMany({}),
+      ScanResult.deleteMany({}),
+    ]);
+    res.json({
+      success: true,
+      sessionsDeleted: sessionsRes.deletedCount || 0,
+      resultsDeleted: resultsRes.deletedCount || 0,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ============ SCAN RESULT Routes ============
 app.post('/api/scan-results', async (req, res) => {
   try {
